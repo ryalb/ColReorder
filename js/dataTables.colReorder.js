@@ -792,7 +792,7 @@ $.extend( ColReorder.prototype, {
 
 		/* Save the state */
 		this.s.dt.oInstance.oApi._fnSaveState( this.s.dt );
-		
+
 		if ( this.s.reorderCallback !== null )
 		{
 			this.s.reorderCallback.call( this );
@@ -877,9 +877,24 @@ $.extend( ColReorder.prototype, {
 	"_fnMouseListener": function ( i, nTh )
 	{
 		var that = this;
+		$(nTh).on( 'mousemove.ColReorder', function (e) {
+			/* Store information about the mouse position */
+			var nThTarget = e.target;
+			var offset = $(nThTarget).offset();
+			var nLength = $(nThTarget).innerWidth();
+
+			/* are we on the col border (if so, resize col) */
+			if (Math.abs(e.pageX - Math.round(offset.left + nLength)) <= 5) {
+				$(nThTarget).css({'cursor': 'col-resize'});
+			}
+			else {
+				$(nThTarget).css({'cursor': 'pointer'});
+			}
+		} );
+
 		$(nTh).on( 'mousedown.ColReorder', function (e) {
 			e.preventDefault();
-			that._fnMouseDown.call( that, e, nTh );
+			that._fnMouseDown.call( that, e, nTh, i );
 		} );
 	},
 
@@ -892,36 +907,70 @@ $.extend( ColReorder.prototype, {
 	 *  @returns void
 	 *  @private
 	 */
-	"_fnMouseDown": function ( e, nTh )
+	"_fnMouseDown": function ( e, nTh, i )
 	{
 		var that = this;
 
-		/* Store information about the mouse position */
-		var target = $(e.target).closest('th, td');
-		var offset = target.offset();
-		var idx = parseInt( $(nTh).attr('data-column-index'), 10 );
+		/* are we resizing a column ? */
+		if ($(nTh).css('cursor') == 'col-resize') {
+			this.s.mouse.startX = e.pageX;
+			this.s.mouse.startWidth = $(nTh).width();
+			this.s.mouse.resizeElem = $(nTh);
+			var nThNext = $(nTh).next();
+			this.s.mouse.nextStartWidth = $(nThNext).width();
+			this.s.mouse.targetIndex = $('th', nTh.parentNode).index(nTh);
+			this.s.mouse.fromIndex = this.s.dt.oInstance.oApi._fnVisibleToColumnIndex(this.s.dt,
+				this.s.mouse.targetIndex);
+			that.dom.resize = true;
 
-		if ( idx === undefined ) {
-			return;
+			//a. Disable column sorting so as to avoid issues when finishing column resizing
+			// i is the original index - need to convert that to the reordered index
+			for (var j = 0; j < this.s.dt.aoColumns.length; j++) {
+				if (this.s.dt.aoColumns[j]._ColReorder_iOrigCol == i) {
+					this.s.dt.aoColumns[j].bSortable = false;
+					break;
+				}
+			}
+
+			//b. Disable Autowidth feature (now the user is in charge of setting column width so keeping this enabled looses changes after operations)
+			this.s.dt.oFeatures.bAutoWidth = false;
+		} else {
+			that.dom.resize = null;
+			/* Store information about the mouse position */
+			var target = $(e.target).closest('th, td');
+			var offset = target.offset();
+			var idx = parseInt($(nTh).attr('data-column-index'), 10);
+
+			if (idx === undefined) {
+				return;
+			}
+
+			//a. Disable column sorting so as to avoid issues when finishing column resizing
+			// i is the original index - need to convert that to the reordered index
+			for (var j = 0; j < this.s.dt.aoColumns.length; j++) {
+				if (this.s.dt.aoColumns[j]._ColReorder_iOrigCol == i) {
+					this.s.dt.aoColumns[j].bSortable = true;
+					break;
+				}
+			}
+
+			this.s.mouse.startX = e.pageX;
+			this.s.mouse.startY = e.pageY;
+			this.s.mouse.offsetX = e.pageX - offset.left;
+			this.s.mouse.offsetY = e.pageY - offset.top;
+			this.s.mouse.target = this.s.dt.aoColumns[idx].nTh;//target[0];
+			this.s.mouse.targetIndex = idx;
+			this.s.mouse.fromIndex = idx;
+
+			this._fnRegions();
 		}
-
-		this.s.mouse.startX = e.pageX;
-		this.s.mouse.startY = e.pageY;
-		this.s.mouse.offsetX = e.pageX - offset.left;
-		this.s.mouse.offsetY = e.pageY - offset.top;
-		this.s.mouse.target = this.s.dt.aoColumns[ idx ].nTh;//target[0];
-		this.s.mouse.targetIndex = idx;
-		this.s.mouse.fromIndex = idx;
-
-		this._fnRegions();
-
 		/* Add event handlers to the document */
 		$(document)
 			.on( 'mousemove.ColReorder', function (e) {
 				that._fnMouseMove.call( that, e );
 			} )
 			.on( 'mouseup.ColReorder', function (e) {
-				that._fnMouseUp.call( that, e );
+				that._fnMouseUp.call( that, e, i );
 			} );
 	},
 
@@ -937,55 +986,75 @@ $.extend( ColReorder.prototype, {
 	{
 		var that = this;
 
-		if ( this.dom.drag === null )
+		/* are we resizing a column ? */
+		if (this.dom.resize) {
+			var nTh = this.s.mouse.resizeElem;
+			var nThNext = $(nTh).next();
+			var moveLength = e.pageX - this.s.mouse.startX;
+			if (moveLength != 0) {
+				$(nThNext).width(this.s.mouse.nextStartWidth - moveLength);
+			}
+			var MIN_WIDTH = 20;
+			var newW = this.s.mouse.startWidth + moveLength;
+			var finalW = newW >= MIN_WIDTH ? newW : MIN_WIDTH;
+			$(nTh).css('min-width', finalW+'px');
+			$(nTh).css('max-width', finalW+'px');
+			$(nTh).css('width', finalW+'px');
+
+			return;
+		}
+		else if ( this.dom.drag === null )
 		{
 			/* Only create the drag element if the mouse has moved a specific distance from the start
 			 * point - this allows the user to make small mouse movements when sorting and not have a
 			 * possibly confusing drag element showing up
 			 */
 			if ( Math.pow(
-				Math.pow(e.pageX - this.s.mouse.startX, 2) +
-				Math.pow(e.pageY - this.s.mouse.startY, 2), 0.5 ) < 5 )
+					Math.pow(e.pageX - this.s.mouse.startX, 2) +
+					Math.pow(e.pageY - this.s.mouse.startY, 2), 0.5 ) < 5 )
 			{
 				return;
 			}
 			this._fnCreateDragNode();
+
 		}
 
-		/* Position the element - we respect where in the element the click occured */
-		this.dom.drag.css( {
-			left: e.pageX - this.s.mouse.offsetX,
-			top: e.pageY - this.s.mouse.offsetY
-		} );
+		if (this.dom.resize != true) {
+			/* Position the element - we respect where in the element the click occured */
+			this.dom.drag.css( {
+				left: e.pageX - this.s.mouse.offsetX,
+				top: e.pageY - this.s.mouse.offsetY
+			} );
 
-		/* Based on the current mouse position, calculate where the insert should go */
-		var bSet = false;
-		var lastToIndex = this.s.mouse.toIndex;
+			/* Based on the current mouse position, calculate where the insert should go */
+			var bSet = false;
+			var lastToIndex = this.s.mouse.toIndex;
 
-		for ( var i=1, iLen=this.s.aoTargets.length ; i<iLen ; i++ )
-		{
-			if ( e.pageX < this.s.aoTargets[i-1].x + ((this.s.aoTargets[i].x-this.s.aoTargets[i-1].x)/2) )
+			for ( var i=1, iLen=this.s.aoTargets.length ; i<iLen ; i++ )
 			{
-				this.dom.pointer.css( 'left', this.s.aoTargets[i-1].x );
-				this.s.mouse.toIndex = this.s.aoTargets[i-1].to;
-				bSet = true;
-				break;
+				if ( e.pageX < this.s.aoTargets[i-1].x + ((this.s.aoTargets[i].x-this.s.aoTargets[i-1].x)/2) )
+				{
+					this.dom.pointer.css( 'left', this.s.aoTargets[i-1].x );
+					this.s.mouse.toIndex = this.s.aoTargets[i-1].to;
+					bSet = true;
+					break;
+				}
 			}
-		}
 
-		// The insert element wasn't positioned in the array (less than
-		// operator), so we put it at the end
-		if ( !bSet )
-		{
-			this.dom.pointer.css( 'left', this.s.aoTargets[this.s.aoTargets.length-1].x );
-			this.s.mouse.toIndex = this.s.aoTargets[this.s.aoTargets.length-1].to;
-		}
+			// The insert element wasn't positioned in the array (less than
+			// operator), so we put it at the end
+			if ( !bSet )
+			{
+				this.dom.pointer.css( 'left', this.s.aoTargets[this.s.aoTargets.length-1].x );
+				this.s.mouse.toIndex = this.s.aoTargets[this.s.aoTargets.length-1].to;
+			}
 
-		// Perform reordering if realtime updating is on and the column has moved
-		if ( this.s.init.bRealtime && lastToIndex !== this.s.mouse.toIndex ) {
-			this.s.dt.oInstance.fnColReorder( this.s.mouse.fromIndex, this.s.mouse.toIndex, false );
-			this.s.mouse.fromIndex = this.s.mouse.toIndex;
-			this._fnRegions();
+			// Perform reordering if realtime updating is on and the column has moved
+			if ( this.s.init.bRealtime && lastToIndex !== this.s.mouse.toIndex ) {
+				this.s.dt.oInstance.fnColReorder( this.s.mouse.fromIndex, this.s.mouse.toIndex );
+				this.s.mouse.fromIndex = this.s.mouse.toIndex;
+				this._fnRegions();
+			}
 		}
 	},
 
@@ -997,7 +1066,7 @@ $.extend( ColReorder.prototype, {
 	 *  @returns void
 	 *  @private
 	 */
-	"_fnMouseUp": function ( e )
+	"_fnMouseUp": function ( e, colResized )
 	{
 		var that = this;
 
@@ -1012,7 +1081,7 @@ $.extend( ColReorder.prototype, {
 			this.dom.pointer = null;
 
 			/* Actually do the reorder */
-			this.s.dt.oInstance.fnColReorder( this.s.mouse.fromIndex, this.s.mouse.toIndex, true );
+			this.s.dt.oInstance.fnColReorder( this.s.mouse.fromIndex, this.s.mouse.toIndex );
 			this._fnSetColumnIndexes();
 
 			/* When scrolling we need to recalculate the column sizes to allow for the shift */
@@ -1028,7 +1097,35 @@ $.extend( ColReorder.prototype, {
 			{
 				this.s.reorderCallback.call( this );
 			}
+		} else if (this.dom.resize !== null) {
+			var j;
+
+			// BHL
+			for (j = 0; j < this.s.dt.aoColumns.length; j++) {
+				if (this.s.dt.aoColumns[j]._ColReorder_iOrigCol == colResized) {
+					colResized = j;
+					break;
+				}
+			}
+
+			// Save the new resized column's width
+			this.s.dt.aoColumns[colResized].sWidth = ($(this.s.mouse.resizeElem).innerWidth() - 38) + "px";
+			this.s.dt.aoColumns[colResized].width = ($(this.s.mouse.resizeElem).innerWidth() - 38) + "px";
+
+			/* Save the state */
+			this.s.dt.oInstance.oApi._fnSaveState( this.s.dt );
+
+			//BHL
+			/* Fire an event so other plug-ins can update */
+			$(this.s.dt.oInstance).trigger('column-resize', [
+				this.s.dt, {
+					"colResized": this.s.dt.oApi._fnColumnIndexToVisible(this.s.dt, colResized),
+					"width": $(this.s.mouse.resizeElem).width() + "px"
+				}
+			]);
 		}
+
+		this.dom.resize = null;
 	},
 
 
